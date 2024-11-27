@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <csignal>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -7,6 +8,11 @@
 #include <sstream>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <sys/stat.h>  // For mkdir and stat
+#include <sys/types.h> // For stat
+#include <ctime>
+#include <dirent.h>
+
 
 #define CONTROL_PORT 2123
 #define BUFFER_SIZE 1024
@@ -106,7 +112,8 @@ int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clien
 }
 
 void handleRetrCommand(const std::string& filename, int dataSocket, int clientSocket) {
-    FILE* file = fopen(filename.c_str(), "rb");
+    const std::string fullPath = std::string("storage") + "/" + filename;
+    FILE* file = fopen(fullPath.c_str(), "rb");
     if (!file) {
         perror("File open failed");
         send(clientSocket, "550 File not found or access denied.\r\n", 39, 0);
@@ -128,7 +135,22 @@ void handleRetrCommand(const std::string& filename, int dataSocket, int clientSo
 }
 
 void handleStorCommand(const std::string& filename, int dataSocket, int clientSocket) {
-    FILE* file = fopen(filename.c_str(), "wb");
+    const std::string storageDir = "storage";
+
+    struct stat st = {0};
+    if (stat(storageDir.c_str(), &st) == -1) {
+        if (mkdir(storageDir.c_str(), 0755) < 0) {
+            perror("Failed to create 'storage' directory");
+            send(clientSocket, "550 Could not create directory.\r\n", 32, 0);
+            return;
+        }
+    }
+
+    // Construct the full path to save the file
+    const std::string fullPath = storageDir + "/" + filename;
+
+    // Open the file for writing
+    FILE* file = fopen(fullPath.c_str(), "wb");
     if (!file) {
         perror("File open failed");
         send(clientSocket, "550 Could not create file.\r\n", 28, 0);
@@ -137,17 +159,110 @@ void handleStorCommand(const std::string& filename, int dataSocket, int clientSo
 
     send(clientSocket, "150 Opening data connection.\r\n", 30, 0);
 
+    // Receive data and write to the file
     char buffer[BUFFER_SIZE];
     ssize_t bytesRead;
     while ((bytesRead = recv(dataSocket, buffer, BUFFER_SIZE, 0)) > 0) {
         fwrite(buffer, 1, bytesRead, file);
     }
 
+    // Close the file and data socket
     fclose(file);
     close(dataSocket);
 
     send(clientSocket, "226 Transfer complete.\r\n", 24, 0);
 }
+
+void handlePwdCommand(int clientSocket) {
+    const std::string storageDir = "/storage"; // Use absolute or logical path
+
+    // Send the "storage" directory as the current working directory
+    std::string response = "257 \"" + storageDir + "\" is the current directory.\r\n";
+    send(clientSocket, response.c_str(), response.size(), 0);
+}
+
+void handleCwdCommand(const std::vector<std::string>& tokens, int clientSocket) {
+    if (tokens.size() < 2) {
+        send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
+        return;
+    }
+
+    const std::string directory = tokens[1];
+    if (directory == "/storage") {
+        send(clientSocket, "250 Directory successfully changed.\r\n", 36, 0);
+    } else {
+        send(clientSocket, "550 Failed to change directory.\r\n", 34, 0);
+    }
+}
+
+
+void handleMkdCommand(const std::vector<std::string>& tokens, int clientSocket) {
+    if (tokens.size() < 2) {
+        send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
+        return;
+    }
+
+    const std::string directory = tokens[1];
+    if (directory == "/storage") {
+        send(clientSocket, "257 \"/storage\" directory created.\r\n", 34, 0);
+    } else {
+        send(clientSocket, "550 Failed to create directory.\r\n", 34, 0);
+    }
+}
+
+void handleMdtmCommand(const std::vector<std::string>& tokens, int clientSocket) {
+    if (tokens.size() < 2) {
+        send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
+        return;
+    }
+
+    const std::string filePath = "storage/" + tokens[1];
+    struct stat st;
+    if (stat(filePath.c_str(), &st) == 0) {
+        struct tm* tm = gmtime(&st.st_mtime);
+        char timeBuf[BUFFER_SIZE];
+        strftime(timeBuf, sizeof(timeBuf), "%Y%m%d%H%M%S", tm);
+
+        std::string response = "213 " + std::string(timeBuf) + "\r\n";
+        send(clientSocket, response.c_str(), response.size(), 0);
+    } else {
+        send(clientSocket, "550 File not found.\r\n", 22, 0);
+    }
+}
+
+void handleTypeCommand(const std::vector<std::string>& tokens, int clientSocket) {
+    if (tokens.size() < 2) {
+        send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
+        return;
+    }
+
+    const std::string type = tokens[1];
+    if (type == "A" || type == "I") {
+        send(clientSocket, "200 Type set successfully.\r\n", 29, 0);
+    } else {
+        send(clientSocket, "504 Command not implemented for that parameter.\r\n", 49, 0);
+    }
+}
+
+void handleSizeCommand(const std::vector<std::string>& tokens, int clientSocket) {
+    if (tokens.size() < 2) {
+        send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
+        return;
+    }
+
+    const std::string filePath = "storage/" + tokens[1];
+    struct stat st;
+    if (stat(filePath.c_str(), &st) == 0) {
+        std::string response = "213 " + std::to_string(st.st_size) + "\r\n";
+        send(clientSocket, response.c_str(), response.size(), 0);
+    } else {
+        send(clientSocket, "550 File not found.\r\n", 22, 0);
+    }
+}
+
+void handleListCommand(int dataSocket, int clientSocket) {
+}
+
 
 void handleClient(int clientSocket) {
     char buffer[BUFFER_SIZE];
@@ -160,6 +275,7 @@ void handleClient(int clientSocket) {
     send(clientSocket, "220 Welcome to FTP Server\r\n", 27, 0);
 
     while (true) {
+
         memset(buffer, 0, BUFFER_SIZE);
         int bytesRead = recv(clientSocket, buffer, BUFFER_SIZE - 1, 0);
         if (bytesRead <= 0) {
@@ -178,7 +294,7 @@ void handleClient(int clientSocket) {
                 continue;
             }
             username = tokens[1];
-            send(clientSocket, "331 Username okay, need password.\r\n", 34, 0);
+            send(clientSocket, "331 Username okay, need password.\r\n\n", 34, 0);
         } else if (cmd == "PASS") {
             if (tokens.size() < 2) {
                 send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
@@ -194,6 +310,18 @@ void handleClient(int clientSocket) {
         } else if (cmd == "QUIT") {
             send(clientSocket, "221 Goodbye.\r\n", 15, 0);
             break;
+        } else if (cmd == "PWD") {
+            handlePwdCommand(clientSocket);
+        } else if (cmd == "CWD") {
+            handleCwdCommand(tokens, clientSocket);
+        } else if (cmd == "MKD") {
+            handleMkdCommand(tokens, clientSocket);
+        } else if (cmd == "SIZE") {
+            handleSizeCommand(tokens, clientSocket);
+        } else if (cmd == "MDTM") {
+            handleMdtmCommand(tokens, clientSocket);
+        } else if (cmd == "TYPE") {
+            handleTypeCommand(tokens, clientSocket);
         } else if (cmd == "PORT") {
             handlePortCommand(tokens, dataAddr, dataSocket, clientSocket);
         } else if (cmd == "PASV") {
@@ -210,7 +338,17 @@ void handleClient(int clientSocket) {
             } else {
                 handleStorCommand(tokens[1], dataSocket, clientSocket);
             }
-        } else if (cmd == "NOOP") {
+        }
+        /*
+        else if (cmd == "LIST") {
+            if (dataSocket < 0) {
+                send(clientSocket, "425 Use PORT or PASV first.\r\n", 29, 0);
+            } else {
+                handleListCommand(dataSocket, clientSocket);
+            }
+        }
+        */
+        else if (cmd == "NOOP") {
             send(clientSocket, "200 Command okay.\r\n", 19, 0);
         } else {
             send(clientSocket, "502 Command not implemented.\r\n", 31, 0);
@@ -222,6 +360,7 @@ void handleClient(int clientSocket) {
 }
 
 int main() {
+    signal(SIGPIPE, SIG_IGN);
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket == -1) {
         perror("Socket creation failed");
