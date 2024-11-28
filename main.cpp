@@ -14,7 +14,7 @@
 #include <dirent.h>
 
 
-#define CONTROL_PORT 2123
+#define CONTROL_PORT 2121
 #define BUFFER_SIZE 1024
 
 std::vector<std::string> splitCommand(const std::string& command) {
@@ -82,7 +82,7 @@ int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clien
 
     dataAddr.sin_family = AF_INET;
     dataAddr.sin_addr.s_addr = INADDR_ANY;
-    dataAddr.sin_port = htons(0); // Let OS choose an available port
+    dataAddr.sin_port = htons(0);
 
     if (bind(dataSocket, (struct sockaddr*)&dataAddr, sizeof(dataAddr)) < 0) {
         perror("Data socket bind failed");
@@ -195,7 +195,6 @@ void handleCwdCommand(const std::vector<std::string>& tokens, int clientSocket) 
     }
 }
 
-
 void handleMkdCommand(const std::vector<std::string>& tokens, int clientSocket) {
     if (tokens.size() < 2) {
         send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
@@ -261,7 +260,50 @@ void handleSizeCommand(const std::vector<std::string>& tokens, int clientSocket)
 }
 
 void handleListCommand(int dataSocket, int clientSocket) {
+    const std::string storageDir = "storage";
+
+    DIR* dir = opendir(storageDir.c_str());
+    if (!dir) {
+        perror("Failed to open directory");
+        send(clientSocket, "450 Requested file action not taken. Directory unavailable.\r\n", 61, 0);
+        return;
+    }
+
+    send(clientSocket, "150 Opening data connection for directory listing.\r\n", 52, 0);
+
+    struct dirent* entry;
+    std::string listData;
+
+    while ((entry = readdir(dir)) != nullptr) {
+        if (std::string(entry->d_name) == "." || std::string(entry->d_name) == "..") {
+            continue; // skip current and parent directory entries
+        }
+        listData += entry->d_name;
+        listData += "\r\n";
+    }
+
+    closedir(dir);
+
+    if (!listData.empty()) {
+        size_t totalSent = 0;
+        while (totalSent < listData.size()) {
+            ssize_t bytesSent = send(dataSocket, listData.c_str() + totalSent, listData.size() - totalSent, 0);
+            if (bytesSent <= 0) {
+                perror("Data send failed");
+                send(clientSocket, "426 Connection closed; transfer aborted.\r\n", 43, 0);
+                close(dataSocket);
+                return;
+            }
+            totalSent += bytesSent;
+        }
+    }
+
+
+    shutdown(dataSocket, SHUT_WR); // Ensure client reads all data
+    close(dataSocket); // Close the data connection
+    send(clientSocket, "226 Directory send OK.\r\n", 24, 0);
 }
+
 
 
 void handleClient(int clientSocket) {
@@ -339,7 +381,6 @@ void handleClient(int clientSocket) {
                 handleStorCommand(tokens[1], dataSocket, clientSocket);
             }
         }
-        /*
         else if (cmd == "LIST") {
             if (dataSocket < 0) {
                 send(clientSocket, "425 Use PORT or PASV first.\r\n", 29, 0);
@@ -347,7 +388,6 @@ void handleClient(int clientSocket) {
                 handleListCommand(dataSocket, clientSocket);
             }
         }
-        */
         else if (cmd == "NOOP") {
             send(clientSocket, "200 Command okay.\r\n", 19, 0);
         } else {
@@ -360,7 +400,9 @@ void handleClient(int clientSocket) {
 }
 
 int main() {
+    // Ignore SIGPIPE
     signal(SIGPIPE, SIG_IGN);
+
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket == -1) {
         perror("Socket creation failed");
@@ -402,3 +444,4 @@ int main() {
     close(serverSocket);
     return 0;
 }
+
