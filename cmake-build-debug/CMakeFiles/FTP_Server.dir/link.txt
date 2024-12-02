@@ -1,0 +1,1 @@
+/usr/bin/g++ -g CMakeFiles/FTP_Server.dir/main.cpp.o -o FTP_Server
