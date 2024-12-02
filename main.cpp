@@ -111,37 +111,52 @@ int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clien
     return dataSocket;
 }
 
-void handleRetrCommand(const std::string& filename, int dataSocket, int clientSocket) {
+void handleRetrCommand(const std::string& filename, int dataClientSocket, int clientSocket) {
     const std::string fullPath = std::string("storage") + "/" + filename;
+
+    // Open the file for reading
     FILE* file = fopen(fullPath.c_str(), "rb");
     if (!file) {
         perror("File open failed");
         send(clientSocket, "550 File not found or access denied.\r\n", 39, 0);
+        close(dataClientSocket);
         return;
     }
 
     send(clientSocket, "150 Opening data connection.\r\n", 30, 0);
 
+    // Read the file and send data to the client
     char buffer[BUFFER_SIZE];
     size_t bytesRead;
+    bool transferFailed = false;
     while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
-        send(dataSocket, buffer, bytesRead, 0);
+        if (send(dataClientSocket, buffer, bytesRead, 0) < 0) {
+            perror("Data send failed");
+            transferFailed = true;
+            break;
+        }
     }
 
     fclose(file);
-    close(dataSocket);
+    close(dataClientSocket); // Close the accepted data connection
 
-    send(clientSocket, "226 Transfer complete.\r\n", 24, 0);
+    if (transferFailed) {
+        send(clientSocket, "426 Connection closed; transfer aborted.\r\n", 43, 0);
+    } else {
+        send(clientSocket, "226 Transfer complete.\r\n", 24, 0);
+    }
 }
 
-void handleStorCommand(const std::string& filename, int dataSocket, int clientSocket) {
+void handleStorCommand(const std::string& filename, int dataClientSocket, int clientSocket) {
     const std::string storageDir = "storage";
 
+    // Ensure the "storage" directory exists
     struct stat st = {0};
     if (stat(storageDir.c_str(), &st) == -1) {
         if (mkdir(storageDir.c_str(), 0755) < 0) {
             perror("Failed to create 'storage' directory");
             send(clientSocket, "550 Could not create directory.\r\n", 32, 0);
+            close(dataClientSocket);
             return;
         }
     }
@@ -154,6 +169,7 @@ void handleStorCommand(const std::string& filename, int dataSocket, int clientSo
     if (!file) {
         perror("File open failed");
         send(clientSocket, "550 Could not create file.\r\n", 28, 0);
+        close(dataClientSocket);
         return;
     }
 
@@ -162,15 +178,23 @@ void handleStorCommand(const std::string& filename, int dataSocket, int clientSo
     // Receive data and write to the file
     char buffer[BUFFER_SIZE];
     ssize_t bytesRead;
-    while ((bytesRead = recv(dataSocket, buffer, BUFFER_SIZE, 0)) > 0) {
-        fwrite(buffer, 1, bytesRead, file);
+    bool transferFailed = false;
+    while ((bytesRead = recv(dataClientSocket, buffer, BUFFER_SIZE, 0)) > 0) {
+        if (fwrite(buffer, 1, bytesRead, file) < bytesRead) {
+            perror("File write failed");
+            transferFailed = true;
+            break;
+        }
     }
 
-    // Close the file and data socket
     fclose(file);
-    close(dataSocket);
+    close(dataClientSocket); // Close the accepted data connection
 
-    send(clientSocket, "226 Transfer complete.\r\n", 24, 0);
+    if (transferFailed || bytesRead < 0) {
+        send(clientSocket, "426 Connection closed; transfer aborted.\r\n", 43, 0);
+    } else {
+        send(clientSocket, "226 Transfer complete.\r\n", 24, 0);
+    }
 }
 
 void handlePwdCommand(int clientSocket) {
@@ -259,13 +283,14 @@ void handleSizeCommand(const std::vector<std::string>& tokens, int clientSocket)
     }
 }
 
-void handleListCommand(int dataSocket, int clientSocket) {
+void handleListCommand(int dataClientSocket, int clientSocket) {
     const std::string storageDir = "storage";
 
     DIR* dir = opendir(storageDir.c_str());
     if (!dir) {
         perror("Failed to open directory");
         send(clientSocket, "450 Requested file action not taken. Directory unavailable.\r\n", 61, 0);
+        close(dataClientSocket);
         return;
     }
 
@@ -276,7 +301,7 @@ void handleListCommand(int dataSocket, int clientSocket) {
 
     while ((entry = readdir(dir)) != nullptr) {
         if (std::string(entry->d_name) == "." || std::string(entry->d_name) == "..") {
-            continue; // skip current and parent directory entries
+            continue; // Skip current and parent directory entries
         }
         listData += entry->d_name;
         listData += "\r\n";
@@ -287,24 +312,21 @@ void handleListCommand(int dataSocket, int clientSocket) {
     if (!listData.empty()) {
         size_t totalSent = 0;
         while (totalSent < listData.size()) {
-            ssize_t bytesSent = send(dataSocket, listData.c_str() + totalSent, listData.size() - totalSent, 0);
+            ssize_t bytesSent = send(dataClientSocket, listData.c_str() + totalSent, listData.size() - totalSent, 0);
             if (bytesSent <= 0) {
                 perror("Data send failed");
                 send(clientSocket, "426 Connection closed; transfer aborted.\r\n", 43, 0);
-                close(dataSocket);
+                close(dataClientSocket);
                 return;
             }
             totalSent += bytesSent;
         }
     }
 
-
-    shutdown(dataSocket, SHUT_WR); // Ensure client reads all data
-    close(dataSocket); // Close the data connection
+    shutdown(dataClientSocket, SHUT_WR); // Ensure client reads all data
+    close(dataClientSocket); // Close the accepted data connection
     send(clientSocket, "226 Directory send OK.\r\n", 24, 0);
 }
-
-
 
 void handleClient(int clientSocket) {
     char buffer[BUFFER_SIZE];
@@ -368,26 +390,60 @@ void handleClient(int clientSocket) {
             handlePortCommand(tokens, dataAddr, dataSocket, clientSocket);
         } else if (cmd == "PASV") {
             dataSocket = startPassiveDataConnection(dataAddr, dataSocket, clientSocket);
-        } else if (cmd == "RETR") {
-            if (tokens.size() < 2) {
-                send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
-            } else {
-                handleRetrCommand(tokens[1], dataSocket, clientSocket);
-            }
         } else if (cmd == "STOR") {
-            if (tokens.size() < 2) {
+            if (dataSocket < 0) {
+                send(clientSocket, "425 Use PASV first.\r\n", 21, 0);
+            } else if (tokens.size() < 2) {
                 send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
             } else {
-                handleStorCommand(tokens[1], dataSocket, clientSocket);
+                sockaddr_in dataClientAddr{};
+                socklen_t addrLen = sizeof(dataClientAddr);
+
+                int dataClientSocket = accept(dataSocket, (struct sockaddr*)&dataClientAddr, &addrLen);
+                if (dataClientSocket < 0) {
+                    perror("Data connection accept failed");
+                    send(clientSocket, "425 Can't open data connection.\r\n", 34, 0);
+                    continue;
+                }
+
+                handleStorCommand(tokens[1], dataClientSocket, clientSocket);
             }
-        }
-        else if (cmd == "LIST") {
+        } else if (cmd == "RETR") {
             if (dataSocket < 0) {
-                send(clientSocket, "425 Use PORT or PASV first.\r\n", 29, 0);
+                send(clientSocket, "425 Use PASV first.\r\n", 21, 0);
+            } else if (tokens.size() < 2) {
+                send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
             } else {
-                handleListCommand(dataSocket, clientSocket);
+                sockaddr_in dataClientAddr{};
+                socklen_t addrLen = sizeof(dataClientAddr);
+
+                int dataClientSocket = accept(dataSocket, (struct sockaddr*)&dataClientAddr, &addrLen);
+                if (dataClientSocket < 0) {
+                    perror("Data connection accept failed");
+                    send(clientSocket, "425 Can't open data connection.\r\n", 34, 0);
+                    continue;
+                }
+
+                handleRetrCommand(tokens[1], dataClientSocket, clientSocket);
+            }
+        } else if (cmd == "LIST") {
+            if (dataSocket < 0) {
+                send(clientSocket, "425 Use PASV first.\r\n", 21, 0);
+            } else {
+                sockaddr_in dataClientAddr{};
+                socklen_t addrLen = sizeof(dataClientAddr);
+
+                int dataClientSocket = accept(dataSocket, (struct sockaddr*)&dataClientAddr, &addrLen);
+                if (dataClientSocket < 0) {
+                    perror("Data connection accept failed");
+                    send(clientSocket, "425 Can't open data connection.\r\n", 34, 0);
+                    continue;
+                }
+
+                handleListCommand(dataClientSocket, clientSocket);
             }
         }
+
         else if (cmd == "NOOP") {
             send(clientSocket, "200 Command okay.\r\n", 19, 0);
         } else {
