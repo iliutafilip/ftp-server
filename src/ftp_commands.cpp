@@ -1,73 +1,9 @@
-#include <algorithm>
-#include <argon2.h>
-#include <csignal>
-#include <cstring>
-#include <ctime>
-#include <dirent.h>
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <string>
-#include <thread>
-#include <unistd.h>
-#include <vector>
-#include <netinet/in.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+//
+// Created by iliut on 12/4/24.
+//
 
-#define CONTROL_PORT 2121
-#define BUFFER_SIZE 1024
-
-std::vector<std::string> splitCommand(const std::string& command) {
-    std::string trimmedCommand = command;
-
-    if (trimmedCommand.size() >= 2 &&
-        trimmedCommand[trimmedCommand.size() - 2] == '\r' &&
-        trimmedCommand[trimmedCommand.size() - 1] == '\n') {
-        trimmedCommand.erase(trimmedCommand.size() - 2);
-    }
-
-    std::istringstream stream(trimmedCommand);
-    std::vector<std::string> tokens;
-    std::string token;
-    while (std::getline(stream, token, ' ')) {
-        tokens.push_back(token);
-    }
-    return tokens;
-}
-
-bool verifyPassword(const std::string& username, const std::string& password) {
-    std::ifstream credentialsFile("credentials.txt");
-    if (!credentialsFile.is_open()) {
-        std::cerr << "Could not open credentials file.\n";
-        return false;
-    }
-
-    std::string line;
-    while (std::getline(credentialsFile, line)) {
-        // format: user:<hashedpassword>
-        size_t delimiterPos = line.find(':');
-        if (delimiterPos == std::string::npos) {
-            continue; // skip malformed lines
-        }
-
-        std::string storedUsername = line.substr(0, delimiterPos);
-        std::string storedHashedPassword = line.substr(delimiterPos + 1);
-
-        if (storedUsername == username) {
-            // verify password
-            int result = argon2id_verify(
-                storedHashedPassword.c_str(), // stored hash
-                password.c_str(),             // password to verify
-                password.length()             // password length
-            );
-
-            return result == ARGON2_OK;
-        }
-    }
-
-    return false; // user not found
-}
+#include "ftp_commands.h"
+#include "user_auth.h"
 
 void handlePortCommand(const std::vector<std::string>& tokens, sockaddr_in& dataAddr, int& dataSocket, int clientSocket) {
     if (tokens.size() < 2) {
@@ -234,7 +170,7 @@ void handleStorCommand(const std::string& filename, int dataClientSocket, int cl
 void handlePwdCommand(int clientSocket) {
     const std::string storageDir = "/storage";
 
-    // send the "storage" directory as the current working directory
+    // Send the "storage" directory as the current working directory
     std::string response = "257 \"" + storageDir + "\" is the current directory.\r\n";
     send(clientSocket, response.c_str(), response.size(), 0);
 }
@@ -494,50 +430,3 @@ void handleClient(int clientSocket) {
     close(clientSocket);
     std::cout << "Client disconnected\n";
 }
-
-int main() {
-    // Ignore SIGPIPE
-    signal(SIGPIPE, SIG_IGN);
-
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket == -1) {
-        perror("Socket creation failed");
-        return 1;
-    }
-
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(CONTROL_PORT);
-
-    if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-        perror("Bind failed");
-        return 1;
-    }
-
-    if (listen(serverSocket, 5) < 0) {
-        perror("Listen failed");
-        return 1;
-    }
-
-    std::cout << "FTP Server listening on port " << CONTROL_PORT << "...\n";
-
-    while (true) {
-        sockaddr_in clientAddr{};
-        socklen_t clientLen = sizeof(clientAddr);
-        int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientLen);
-        if (clientSocket < 0) {
-            perror("Accept failed");
-            continue;
-        }
-
-        std::cout << "Client connected\n";
-
-        std::thread clientThread(handleClient, clientSocket);
-        clientThread.detach();
-    }
-
-    close(serverSocket);
-    return 0;
-}
-
