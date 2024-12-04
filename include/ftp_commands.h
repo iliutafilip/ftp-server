@@ -9,8 +9,8 @@
 
 void handlePortCommand(const std::vector<std::string>& tokens, sockaddr_in& dataAddr, int& dataSocket, int clientSocket);
 int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clientSocket);
-void handleRetrCommand(const std::string& filename, int dataClientSocket, int clientSocket);
-void handleStorCommand(const std::string& filename, int dataClientSocket, int clientSocket);
+void handleRetrCommand(const std::string& filename, int dataClientSocket, int clientSocket, const std::string& transferType);
+void handleStorCommand(const std::string& filename, int dataClientSocket, int clientSocket, const std::string& transferType);
 void handlePwdCommand(int clientSocket);
 void handleCwdCommand(const std::vector<std::string>& tokens, int clientSocket);
 void handleMkdCommand(const std::vector<std::string>& tokens, int clientSocket);

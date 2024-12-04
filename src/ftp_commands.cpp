@@ -12,17 +12,24 @@ void handlePortCommand(const std::vector<std::string>& tokens, sockaddr_in& data
     }
 
     std::string hostPort = tokens[1];
-    std::replace(hostPort.begin(), hostPort.end(), ',', ' ');
+    if (std::count(hostPort.begin(), hostPort.end(), ',') != 5) {
+        send(clientSocket, "501 Invalid PORT parameters.\r\n", 30, 0);
+        return;
+    }
 
+    std::replace(hostPort.begin(), hostPort.end(), ',', ' ');
     std::istringstream stream(hostPort);
-    int p1, p2;
-    std::vector<int> parts(6);
+    int parts[6];
     for (int i = 0; i < 6; ++i) {
-        stream >> parts[i];
+        if (!(stream >> parts[i]) || parts[i] < 0 || parts[i] > 255) {
+            send(clientSocket, "501 Invalid PORT parameters.\r\n", 30, 0);
+            return;
+        }
     }
 
     dataAddr.sin_family = AF_INET;
     dataAddr.sin_port = htons((parts[4] * 256) + parts[5]);
+    dataAddr.sin_addr.s_addr = htonl((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]);
 
     dataSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (dataSocket < 0) {
@@ -33,9 +40,8 @@ void handlePortCommand(const std::vector<std::string>& tokens, sockaddr_in& data
 
     if (connect(dataSocket, (struct sockaddr*)&dataAddr, sizeof(dataAddr)) < 0) {
         perror("Data connection failed");
-        send(clientSocket, "425 Can't open data connection.\r\n", 34, 0);
         close(dataSocket);
-        dataSocket = -1;
+        send(clientSocket, "425 Can't open data connection.\r\n", 34, 0);
         return;
     }
 
@@ -81,12 +87,17 @@ int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clien
     return dataSocket;
 }
 
-void handleRetrCommand(const std::string& filename, int dataClientSocket, int clientSocket) {
-    const std::string fullPath = std::string("storage") + "/" + filename;
+void handleRetrCommand(const std::string& filename, int dataClientSocket, int clientSocket, const std::string& transferType) {
+    if (filename.find("..") != std::string::npos) {
+        send(clientSocket, "550 Invalid file name.\r\n", 24, 0);
+        close(dataClientSocket);
+        return;
+    }
 
-    // Open the file for reading
-    FILE* file = fopen(fullPath.c_str(), "rb");
-    if (!file) {
+    const std::string fullPath = "storage/" + filename;
+
+    std::ifstream file(fullPath, std::ios::binary);
+    if (!file.is_open()) {
         perror("File open failed");
         send(clientSocket, "550 File not found or access denied.\r\n", 39, 0);
         close(dataClientSocket);
@@ -95,20 +106,39 @@ void handleRetrCommand(const std::string& filename, int dataClientSocket, int cl
 
     send(clientSocket, "150 Opening data connection.\r\n", 30, 0);
 
-    // Read the file and send data to the client
     char buffer[BUFFER_SIZE];
-    size_t bytesRead;
     bool transferFailed = false;
-    while ((bytesRead = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
-        if (send(dataClientSocket, buffer, bytesRead, 0) < 0) {
-            perror("Data send failed");
-            transferFailed = true;
-            break;
+
+    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+        std::streamsize bytesRead = file.gcount();
+
+        if (transferType == "A") {
+            // Perform ASCII conversion (e.g., convert \n to \r\n)
+            std::string data(buffer, bytesRead);
+            for (size_t i = 0; i < data.size(); ++i) {
+                if (data[i] == '\n') {
+                    if (send(dataClientSocket, "\r", 1, 0) < 0 || send(dataClientSocket, "\n", 1, 0) < 0) {
+                        transferFailed = true;
+                        break;
+                    }
+                } else {
+                    if (send(dataClientSocket, &data[i], 1, 0) < 0) {
+                        transferFailed = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Binary mode
+            if (send(dataClientSocket, buffer, bytesRead, 0) < 0) {
+                transferFailed = true;
+                break;
+            }
         }
     }
 
-    fclose(file);
-    close(dataClientSocket); // Close the accepted data connection
+    file.close();
+    close(dataClientSocket);
 
     if (transferFailed) {
         send(clientSocket, "426 Connection closed; transfer aborted.\r\n", 43, 0);
@@ -117,10 +147,16 @@ void handleRetrCommand(const std::string& filename, int dataClientSocket, int cl
     }
 }
 
-void handleStorCommand(const std::string& filename, int dataClientSocket, int clientSocket) {
-    const std::string storageDir = "storage";
 
-    // ensure the "storage" directory exists
+
+void handleStorCommand(const std::string& filename, int dataClientSocket, int clientSocket, const std::string& transferType) {
+    if (filename.find("..") != std::string::npos) {
+        send(clientSocket, "550 Invalid file name.\r\n", 24, 0);
+        close(dataClientSocket);
+        return;
+    }
+
+    const std::string storageDir = "storage";
     struct stat st = {0};
     if (stat(storageDir.c_str(), &st) == -1) {
         if (mkdir(storageDir.c_str(), 0755) < 0) {
@@ -131,12 +167,9 @@ void handleStorCommand(const std::string& filename, int dataClientSocket, int cl
         }
     }
 
-    // Construct the full path to save the file
     const std::string fullPath = storageDir + "/" + filename;
-
-    // Open the file for writing
-    FILE* file = fopen(fullPath.c_str(), "wb");
-    if (!file) {
+    std::ofstream file(fullPath, std::ios::binary);
+    if (!file.is_open()) {
         perror("File open failed");
         send(clientSocket, "550 Could not create file.\r\n", 28, 0);
         close(dataClientSocket);
@@ -145,20 +178,45 @@ void handleStorCommand(const std::string& filename, int dataClientSocket, int cl
 
     send(clientSocket, "150 Opening data connection.\r\n", 30, 0);
 
-    // Receive data and write to the file
     char buffer[BUFFER_SIZE];
     ssize_t bytesRead;
     bool transferFailed = false;
-    while ((bytesRead = recv(dataClientSocket, buffer, BUFFER_SIZE, 0)) > 0) {
-        if (fwrite(buffer, 1, bytesRead, file) < bytesRead) {
-            perror("File write failed");
-            transferFailed = true;
-            break;
+
+    if (transferType == "A") {
+        // ASCII Mode: Convert \r\n to \n before writing
+        std::string data;
+        while ((bytesRead = recv(dataClientSocket, buffer, BUFFER_SIZE, 0)) > 0) {
+            data.append(buffer, bytesRead);
+
+            // Replace \r\n with \n
+            size_t pos;
+            while ((pos = data.find("\r\n")) != std::string::npos) {
+                data.replace(pos, 2, "\n");
+            }
+
+            // Write processed data to the file
+            file.write(data.c_str(), data.size());
+            if (!file) {
+                perror("File write failed");
+                transferFailed = true;
+                break;
+            }
+            data.clear();
+        }
+    } else {
+        // Binary Mode
+        while ((bytesRead = recv(dataClientSocket, buffer, BUFFER_SIZE, 0)) > 0) {
+            file.write(buffer, bytesRead);
+            if (!file) {
+                perror("File write failed");
+                transferFailed = true;
+                break;
+            }
         }
     }
 
-    fclose(file);
-    close(dataClientSocket); // Close the accepted data connection
+    file.close();
+    close(dataClientSocket);
 
     if (transferFailed || bytesRead < 0) {
         send(clientSocket, "426 Connection closed; transfer aborted.\r\n", 43, 0);
@@ -166,6 +224,8 @@ void handleStorCommand(const std::string& filename, int dataClientSocket, int cl
         send(clientSocket, "226 Transfer complete.\r\n", 24, 0);
     }
 }
+
+
 
 void handlePwdCommand(int clientSocket) {
     const std::string storageDir = "/storage";
@@ -243,7 +303,13 @@ void handleSizeCommand(const std::vector<std::string>& tokens, int clientSocket)
         return;
     }
 
-    const std::string filePath = "storage/" + tokens[1];
+    const std::string& filename = tokens[1];
+    if (filename.find("..") != std::string::npos) {
+        send(clientSocket, "550 Invalid file name.\r\n", 24, 0);
+        return;
+    }
+
+    const std::string filePath = "storage/" + filename;
     struct stat st;
     if (stat(filePath.c_str(), &st) == 0) {
         std::string response = "213 " + std::to_string(st.st_size) + "\r\n";
@@ -302,6 +368,7 @@ void handleClient(int clientSocket) {
     char buffer[BUFFER_SIZE];
     bool isAuthenticated = false;
     std::string username;
+    std::string transferType = "I"; // Default to binary mode
 
     int dataSocket = -1;
     sockaddr_in dataAddr{};
@@ -382,7 +449,7 @@ void handleClient(int clientSocket) {
                     continue;
                 }
 
-                handleStorCommand(tokens[1], dataClientSocket, clientSocket);
+                handleStorCommand(tokens[1], dataClientSocket, clientSocket, transferType);
             }
         } else if (cmd == "RETR") {
             if (dataSocket < 0) {
@@ -400,7 +467,7 @@ void handleClient(int clientSocket) {
                     continue;
                 }
 
-                handleRetrCommand(tokens[1], dataClientSocket, clientSocket);
+                handleRetrCommand(tokens[1], dataClientSocket, clientSocket, transferType);
             }
         } else if (cmd == "LIST") {
             if (dataSocket < 0) {
