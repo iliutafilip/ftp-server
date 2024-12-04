@@ -2,6 +2,18 @@
 
 This is a simple FTP server implemented in C++. It supports a variety of FTP commands to interact with files and directories. Below are the specifications and functionality of each supported command.
 
+This project uses the argon2 library for password hashing.
+
+### Clone the argon2 git repo to use it in the project
+   ```bash
+   git clone https://github.com/P-H-C/phc-winner-argon2.git
+   ```
+
+## **How to Use**
+1. Start the server:
+   ```bash
+   ./ftp-server
+   ```
 ---
 
 ## **Supported FTP Commands**
@@ -41,25 +53,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **5. CWD**
-- **Description**: Changes the working directory.
-- **Usage**: `CWD <directory>`
-- **Response**:
-  - `250 Directory successfully changed.`: If the directory change is successful.
-  - `550 Failed to change directory.`: If the specified directory does not exist or cannot be accessed.
-
----
-
-### **6. MKD**
-- **Description**: Creates a new directory.
-- **Usage**: `MKD <directory>`
-- **Response**:
-  - `257 "<directory>" directory created.`: If the directory is successfully created.
-  - `550 Failed to create directory.`: If the directory could not be created.
-
----
-
-### **7. TYPE**
+### **6. TYPE**
 - **Description**: Sets the transfer mode (ASCII or Binary).
 - **Usage**: `TYPE <mode>` (where `<mode>` is `A` for ASCII or `I` for Binary)
 - **Response**:
@@ -68,7 +62,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **8. SIZE**
+### **7. SIZE**
 - **Description**: Returns the size of a specified file.
 - **Usage**: `SIZE <filename>`
 - **Response**:
@@ -77,7 +71,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **9. MDTM**
+### **8. MDTM**
 - **Description**: Returns the last modification time of a file.
 - **Usage**: `MDTM <filename>`
 - **Response**:
@@ -86,7 +80,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **10. PORT**
+### **9. PORT**
 - **Description**: Specifies the client's data connection port.
 - **Usage**: `PORT <h1,h2,h3,h4,p1,p2>` (where `<h1-h4>` is the client IP and `<p1,p2>` is the port)
 - **Response**:
@@ -95,7 +89,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **11. PASV**
+### **10. PASV**
 - **Description**: Switches to passive mode and provides the server's IP and port for data transfer.
 - **Usage**: `PASV`
 - **Response**:
@@ -104,7 +98,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **12. LIST**
+### **11. LIST**
 - **Description**: Lists files and directories in the current working directory.
 - **Usage**: `LIST`
 - **Response**:
@@ -115,7 +109,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **13. STOR**
+### **12. STOR**
 - **Description**: Uploads a file to the server.
 - **Usage**: `STOR <filename>`
 - **Response**:
@@ -127,7 +121,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **14. RETR**
+### **13. RETR**
 - **Description**: Downloads a file from the server.
 - **Usage**: `RETR <filename>`
 - **Response**:
@@ -139,7 +133,7 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-### **15. NOOP**
+### **14. NOOP**
 - **Description**: Does nothing; used to keep the connection alive.
 - **Usage**: `NOOP`
 - **Response**:
@@ -153,7 +147,4 @@ This is a simple FTP server implemented in C++. It supports a variety of FTP com
 
 ---
 
-## **How to Use**
-1. Start the server:
-   ```bash
-   ./ftp-server
+
