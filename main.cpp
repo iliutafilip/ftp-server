@@ -1,18 +1,19 @@
 #include <algorithm>
+#include <argon2.h>
 #include <csignal>
 #include <cstring>
-#include <iostream>
-#include <string>
-#include <vector>
-#include <thread>
-#include <sstream>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <sys/stat.h>  // For mkdir and stat
-#include <sys/types.h> // For stat
 #include <ctime>
 #include <dirent.h>
-
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+#include <netinet/in.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #define CONTROL_PORT 2121
 #define BUFFER_SIZE 1024
@@ -33,6 +34,39 @@ std::vector<std::string> splitCommand(const std::string& command) {
         tokens.push_back(token);
     }
     return tokens;
+}
+
+bool verifyPassword(const std::string& username, const std::string& password) {
+    std::ifstream credentialsFile("credentials.txt");
+    if (!credentialsFile.is_open()) {
+        std::cerr << "Could not open credentials file.\n";
+        return false;
+    }
+
+    std::string line;
+    while (std::getline(credentialsFile, line)) {
+        // format: user:<hashedpassword>
+        size_t delimiterPos = line.find(':');
+        if (delimiterPos == std::string::npos) {
+            continue; // skip malformed lines
+        }
+
+        std::string storedUsername = line.substr(0, delimiterPos);
+        std::string storedHashedPassword = line.substr(delimiterPos + 1);
+
+        if (storedUsername == username) {
+            // verify password
+            int result = argon2id_verify(
+                storedHashedPassword.c_str(), // stored hash
+                password.c_str(),             // password to verify
+                password.length()             // password length
+            );
+
+            return result == ARGON2_OK;
+        }
+    }
+
+    return false; // user not found
 }
 
 void handlePortCommand(const std::vector<std::string>& tokens, sockaddr_in& dataAddr, int& dataSocket, int clientSocket) {
@@ -150,7 +184,7 @@ void handleRetrCommand(const std::string& filename, int dataClientSocket, int cl
 void handleStorCommand(const std::string& filename, int dataClientSocket, int clientSocket) {
     const std::string storageDir = "storage";
 
-    // Ensure the "storage" directory exists
+    // ensure the "storage" directory exists
     struct stat st = {0};
     if (stat(storageDir.c_str(), &st) == -1) {
         if (mkdir(storageDir.c_str(), 0755) < 0) {
@@ -198,9 +232,9 @@ void handleStorCommand(const std::string& filename, int dataClientSocket, int cl
 }
 
 void handlePwdCommand(int clientSocket) {
-    const std::string storageDir = "/storage"; // Use absolute or logical path
+    const std::string storageDir = "/storage";
 
-    // Send the "storage" directory as the current working directory
+    // send the "storage" directory as the current working directory
     std::string response = "257 \"" + storageDir + "\" is the current directory.\r\n";
     send(clientSocket, response.c_str(), response.size(), 0);
 }
@@ -339,13 +373,13 @@ void handleClient(int clientSocket) {
     send(clientSocket, "220 Welcome to FTP Server\r\n", 27, 0);
 
     while (true) {
-
         memset(buffer, 0, BUFFER_SIZE);
         int bytesRead = recv(clientSocket, buffer, BUFFER_SIZE - 1, 0);
         if (bytesRead <= 0) {
             std::cout << "Connection closed or error occurred.\n";
             break;
         }
+
         std::string command(buffer);
         auto tokens = splitCommand(command);
 
@@ -358,7 +392,7 @@ void handleClient(int clientSocket) {
                 continue;
             }
             username = tokens[1];
-            send(clientSocket, "331 Username okay, need password.\r\n\n", 34, 0);
+            send(clientSocket, "331 Username okay, need password.\r\n", 34, 0);
         } else if (cmd == "PASS") {
             if (tokens.size() < 2) {
                 send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
@@ -366,11 +400,17 @@ void handleClient(int clientSocket) {
             }
 
             if (!username.empty()) {
-                isAuthenticated = true;
-                send(clientSocket, "230 User logged in, proceed.\r\n", 30, 0);
+                if (verifyPassword(username, tokens[1])) {
+                    isAuthenticated = true;
+                    send(clientSocket, "230 User logged in, proceed.\r\n", 30, 0);
+                } else {
+                    send(clientSocket, "530 Invalid username or password.\r\n", 36, 0);
+                }
             } else {
                 send(clientSocket, "503 Bad sequence of commands.\r\n", 32, 0);
             }
+        } else if (!isAuthenticated) {
+            send(clientSocket, "530 Please log in first.\r\n", 27, 0);
         } else if (cmd == "QUIT") {
             send(clientSocket, "221 Goodbye.\r\n", 15, 0);
             break;
