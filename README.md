@@ -2,7 +2,7 @@
 
 This is a simple FTP server implemented in C++. It supports a variety of FTP commands to interact with files and directories. Below are the specifications and functionality of each supported command.
 
-By default, the server runs on **localhost**.
+By default, the server runs on **localhost** and uses **control port 2121** for development.
 
 This project uses the argon2 library for password hashing.
 
