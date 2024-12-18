@@ -49,6 +49,9 @@ void handlePortCommand(const std::vector<std::string>& tokens, sockaddr_in& data
 }
 
 int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clientSocket) {
+
+    std::string serverIp = "192.168.253.128";
+
     dataSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (dataSocket < 0) {
         perror("Data socket creation failed");
@@ -80,8 +83,9 @@ int startPassiveDataConnection(sockaddr_in& dataAddr, int& dataSocket, int clien
     int p1 = ntohs(dataAddr.sin_port) / 256;
     int p2 = ntohs(dataAddr.sin_port) % 256;
 
+    std::replace(serverIp.begin(), serverIp.end(), '.', ',');
     char response[BUFFER_SIZE];
-    snprintf(response, BUFFER_SIZE, "227 Entering Passive Mode (127,0,0,1,%d,%d).\r\n", p1, p2);
+    snprintf(response, BUFFER_SIZE, "227 Entering Passive Mode (%s,%d,%d).\r\n", serverIp.c_str(), p1, p2);
     send(clientSocket, response, strlen(response), 0);
 
     return dataSocket;
@@ -390,18 +394,25 @@ void handleClient(int clientSocket) {
 
         std::string cmd = tokens[0];
         if (cmd == "USER") {
+            std::cout << "Received USER command: " << tokens[1] << "\n";
+
             if (tokens.size() < 2) {
                 send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
                 continue;
             }
             username = tokens[1];
-            send(clientSocket, "331 Username okay, need password.\r\n", 34, 0);
+            send(clientSocket, "331 Username okay, need password.\r\n", 35, 0);
         } else if (cmd == "PASS") {
+
+            std::cout << "Received PASS command: " << tokens[1] << "\n";
+            if (username.empty()) {
+                std::cout << "Error: PASS received without a prior USER command.\n";
+            }
+
             if (tokens.size() < 2) {
                 send(clientSocket, "501 Syntax error in parameters or arguments.\r\n", 46, 0);
                 continue;
             }
-
             if (!username.empty()) {
                 if (verifyPassword(username, tokens[1])) {
                     isAuthenticated = true;
